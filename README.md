@@ -1,4 +1,4 @@
-<div style="text-align: center;">
+<div align="center">
 <h1>Electrical Board Budgeting System</h1>
 
 [![GitHub License](https://img.shields.io/github/license/OscarTired/Etm_presupuestos?style=flat-square)](https://github.com/OscarTired/Etm_presupuestos/blob/main/LICENSE)
