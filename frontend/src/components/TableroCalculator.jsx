@@ -18,6 +18,18 @@ export default function TableroCalculator() {
   
   // Margen Bruto
   const [mbPercentage, setMbPercentage] = useState(20.0)
+
+  // Descuento global parametrizable (reemplaza el 20% fijo del catálogo)
+  const [descuento, setDescuento] = useState(20.0)
+
+  // Análisis de imagen con IA
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiFile, setAiFile] = useState(null)
+  const [aiPreview, setAiPreview] = useState(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState(null)
+  const [aiMatches, setAiMatches] = useState(null)
+  const [aiTargetBoard, setAiTargetBoard] = useState('T01')
   
   // Búsqueda y filtros
   const [searchQuery, setSearchQuery] = useState('')
@@ -56,6 +68,13 @@ export default function TableroCalculator() {
     }
     fetchCatalog()
   }, [])
+
+  // Mantener válido el tablero destino del análisis IA
+  useEffect(() => {
+    if (!activeBoards.some(b => b.id === aiTargetBoard) && activeBoards.length > 0) {
+      setAiTargetBoard(activeBoards[0].id)
+    }
+  }, [activeBoards, aiTargetBoard])
 
   // Agregar un tablero nuevo (máximo 10: T01 - T10)
   const handleAddBoard = () => {
@@ -177,7 +196,8 @@ export default function TableroCalculator() {
         body: JSON.stringify({
           active_boards: activeBoards,
           items: payloadItems,
-          mb_percentage: Number(mbPercentage)
+          mb_percentage: Number(mbPercentage),
+          descuento_percentage: Number(descuento)
         })
       })
 
@@ -193,6 +213,87 @@ export default function TableroCalculator() {
     } finally {
       setCalculating(false)
     }
+  }
+
+  // Precio unitario efectivo con el descuento global aplicado
+  const effectiveUnitPrice = (item) => item.precio_lista * (1 - Number(descuento) / 100)
+
+  // ===== Análisis de imagen con IA =====
+  const handleAiFileChange = (file) => {
+    if (!file) return
+    setAiError(null)
+    setAiMatches(null)
+    setAiFile(file)
+    const reader = new FileReader()
+    reader.onload = (e) => setAiPreview(e.target.result)
+    reader.readAsDataURL(file)
+  }
+
+  const handleAnalyzeImage = async () => {
+    if (!aiFile) {
+      setAiError('Seleccione una imagen primero.')
+      return
+    }
+    setAiLoading(true)
+    setAiError(null)
+    setAiMatches(null)
+    try {
+      const baseUrl = import.meta.env.VITE_API_URL
+        ? import.meta.env.VITE_API_URL.replace('/calculate', '')
+        : 'http://localhost:8000/api'
+
+      const formData = new FormData()
+      formData.append('image', aiFile)
+
+      const response = await fetch(`${baseUrl}/tableros/analyze-image`, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json' },
+        body: formData
+      })
+
+      const data = await response.json()
+      if (!response.ok) {
+        throw new Error(data.error || data.detail || 'No se pudo analizar la imagen.')
+      }
+      setAiMatches(data.matches || [])
+    } catch (err) {
+      setAiError(err.message)
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  // Agregar la coincidencia de un componente detectado al tablero seleccionado
+  const handleApplyMatch = (matchEntry) => {
+    if (!matchEntry || !matchEntry.match) return
+    const itemId = matchEntry.match.id
+    const qty = matchEntry.component?.cantidad || 1
+    const current = (quantities[itemId] && quantities[itemId][aiTargetBoard]) || 0
+    handleQtyChange(itemId, aiTargetBoard, current + qty)
+  }
+
+  // Agregar todas las coincidencias válidas de una vez
+  const handleApplyAllMatches = () => {
+    if (!aiMatches) return
+    setQuantities(prev => {
+      const updated = { ...prev }
+      aiMatches.forEach(m => {
+        if (!m.match) return
+        const itemId = m.match.id
+        const qty = m.component?.cantidad || 1
+        const itemMap = updated[itemId] ? { ...updated[itemId] } : {}
+        itemMap[aiTargetBoard] = (itemMap[aiTargetBoard] || 0) + qty
+        updated[itemId] = itemMap
+      })
+      return updated
+    })
+  }
+
+  const resetAi = () => {
+    setAiFile(null)
+    setAiPreview(null)
+    setAiMatches(null)
+    setAiError(null)
   }
 
   // Extraer valores únicos para los filtros de catálogo cargado
@@ -422,25 +523,50 @@ export default function TableroCalculator() {
 
           <div className="xl:col-span-4 bg-white dark:bg-[#111] border border-gray-300 dark:border-gray-800 p-4 shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.05)]">
             <h3 className="text-xs font-bold uppercase text-gray-500 dark:text-gray-400 border-b border-gray-200 dark:border-gray-800 pb-2 mb-3">Parámetros Financieros</h3>
-            <div>
-              <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1 uppercase">Margen Bruto (%MB) Global</label>
-              <div className="relative">
-                <input
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  max="99.9"
-                  value={mbPercentage}
-                  onChange={(e) => setMbPercentage(Math.max(0, Math.min(99.9, parseFloat(e.target.value) || 0)))}
-                  className="w-full px-3 py-2 bg-gray-50 dark:bg-[#0a0a0a] border border-gray-300 dark:border-gray-700 font-mono text-sm focus:border-[#286caf] dark:focus:border-[#faba33]"
-                />
-                <span className="absolute right-3 top-2 font-mono text-sm text-gray-400">%</span>
+            <div className="space-y-4">
+              {/* DESCUENTO GLOBAL */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1 uppercase">Descuento Global (sobre Precio Lista)</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="99.9"
+                    value={descuento}
+                    onChange={(e) => setDescuento(Math.max(0, Math.min(99.9, parseFloat(e.target.value) || 0)))}
+                    className="w-full px-3 py-2 bg-gray-50 dark:bg-[#0a0a0a] border border-gray-300 dark:border-gray-700 font-mono text-sm focus:border-[#286caf] dark:focus:border-[#faba33]"
+                  />
+                  <span className="absolute right-3 top-2 font-mono text-sm text-gray-400">%</span>
+                </div>
+                <p className="text-[10px] text-gray-500 font-sans mt-1.5 leading-relaxed">
+                  Se aplica a todos los equipos del catálogo:
+                  <br />
+                  <code className="font-mono bg-gray-100 dark:bg-black/40 px-1 text-[9px]">Precio Unit. = Precio Lista × (1 − %Desc)</code>
+                </p>
               </div>
-              <p className="text-[10px] text-gray-500 font-sans mt-1.5 leading-relaxed">
-                El margen se calcula utilizando la fórmula financiera industrial:
-                <br />
-                <code className="font-mono bg-gray-100 dark:bg-black/40 px-1 text-[9px]">Margen = Costo / (1 - %MB) - Costo</code>
-              </p>
+
+              {/* MARGEN BRUTO */}
+              <div>
+                <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1 uppercase">Margen Bruto (%MB) Global</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    step="0.1"
+                    min="0"
+                    max="99.9"
+                    value={mbPercentage}
+                    onChange={(e) => setMbPercentage(Math.max(0, Math.min(99.9, parseFloat(e.target.value) || 0)))}
+                    className="w-full px-3 py-2 bg-gray-50 dark:bg-[#0a0a0a] border border-gray-300 dark:border-gray-700 font-mono text-sm focus:border-[#286caf] dark:focus:border-[#faba33]"
+                  />
+                  <span className="absolute right-3 top-2 font-mono text-sm text-gray-400">%</span>
+                </div>
+                <p className="text-[10px] text-gray-500 font-sans mt-1.5 leading-relaxed">
+                  El margen se calcula utilizando la fórmula financiera industrial:
+                  <br />
+                  <code className="font-mono bg-gray-100 dark:bg-black/40 px-1 text-[9px]">Margen = Costo / (1 - %MB) - Costo</code>
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -448,7 +574,178 @@ export default function TableroCalculator() {
 
       {/* PASO 2: AGREGAR EQUIPAMIENTO */}
       {step === 2 && (
-        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 animate-in fade-in duration-200">
+        <div className="space-y-6 animate-in fade-in duration-200">
+
+        {/* ===== SECCIÓN: ANÁLISIS POR IMAGEN (IA) ===== */}
+        <div className="bg-white dark:bg-[#111] border border-gray-300 dark:border-gray-800 shadow-[4px_4px_0px_0px_rgba(0,0,0,0.1)] dark:shadow-[4px_4px_0px_0px_rgba(255,255,255,0.05)]">
+          <button
+            onClick={() => setAiOpen(o => !o)}
+            className="w-full flex items-center justify-between px-4 py-3 bg-gradient-to-r from-[#286caf]/10 to-transparent dark:from-[#faba33]/15 border-b border-gray-300 dark:border-gray-800 text-left"
+          >
+            <div className="flex items-center gap-3">
+              <svg className="w-5 h-5 text-[#286caf] dark:text-[#faba33]" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456z" /></svg>
+              <div>
+                <h2 className="text-sm font-bold uppercase tracking-wider text-gray-800 dark:text-gray-200">Detección Automática con IA</h2>
+                <p className="text-[10px] text-gray-500 font-sans">Sube una foto, plano o diagrama unifilar y la IA detectará los componentes y los emparejará con el catálogo ABB.</p>
+              </div>
+            </div>
+            <span className="text-[#286caf] dark:text-[#faba33] font-mono text-lg">{aiOpen ? '−' : '+'}</span>
+          </button>
+
+          {aiOpen && (
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Zona de carga */}
+                <div className="space-y-3">
+                  <label className="block border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-[#286caf] dark:hover:border-[#faba33] transition-colors cursor-pointer p-4 text-center bg-gray-50/50 dark:bg-[#0a0a0a]">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handleAiFileChange(e.target.files?.[0])}
+                    />
+                    {aiPreview ? (
+                      <img src={aiPreview} alt="Vista previa" className="max-h-48 mx-auto object-contain border border-gray-200 dark:border-gray-800" />
+                    ) : (
+                      <div className="py-6">
+                        <svg className="w-8 h-8 mx-auto text-gray-400 mb-2" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+                        <p className="text-xs font-sans text-gray-600 dark:text-gray-400 font-semibold">Haz clic para subir una imagen</p>
+                        <p className="text-[10px] text-gray-400 font-mono mt-1">JPG, PNG, WEBP — máx. 10MB</p>
+                      </div>
+                    )}
+                  </label>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleAnalyzeImage}
+                      disabled={aiLoading || !aiFile}
+                      className="flex-1 px-4 py-2 bg-[#286caf] dark:bg-[#faba33] hover:bg-[#1f568e] dark:hover:bg-[#e0a72d] disabled:opacity-40 text-white dark:text-black font-sans text-xs font-bold uppercase tracking-widest transition-colors flex items-center justify-center gap-2"
+                    >
+                      {aiLoading && <span className="animate-spin w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full"></span>}
+                      {aiLoading ? 'Analizando...' : 'Analizar Imagen'}
+                    </button>
+                    {aiFile && (
+                      <button
+                        onClick={resetAi}
+                        className="px-3 py-2 border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-xs font-bold uppercase tracking-wider hover:bg-gray-50 dark:hover:bg-gray-800"
+                      >
+                        Limpiar
+                      </button>
+                    )}
+                  </div>
+
+                  {aiError && (
+                    <div className="p-2.5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 text-red-700 dark:text-red-400 text-[11px] font-mono">
+                      {aiError}
+                    </div>
+                  )}
+                </div>
+
+                {/* Configuración / instrucciones */}
+                <div className="space-y-3 text-xs text-gray-600 dark:text-gray-400 font-sans">
+                  <div>
+                    <label className="block text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5">Agregar componentes detectados a:</label>
+                    <select
+                      value={aiTargetBoard}
+                      onChange={(e) => setAiTargetBoard(e.target.value)}
+                      className="w-full px-3 py-2 bg-gray-50 dark:bg-[#0a0a0a] border border-gray-300 dark:border-gray-700 text-sm font-mono focus:border-[#286caf] dark:focus:border-[#faba33]"
+                    >
+                      {activeBoards.map(b => (
+                        <option key={b.id} value={b.id}>{b.id} — {b.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <ul className="list-disc list-inside space-y-1 text-[11px] leading-relaxed">
+                    <li>La IA detecta interruptores termomagnéticos (ITM) y diferenciales (ID).</li>
+                    <li>Cada componente se empareja <strong>exclusivamente</strong> con el catálogo ABB.</li>
+                    <li>Si la capacidad exacta (kA) no existe, se elige la siguiente que concuerda.</li>
+                    <li>Revisa las coincidencias y agrégalas al tablero seleccionado.</li>
+                  </ul>
+                </div>
+              </div>
+
+              {/* Resultados de coincidencias */}
+              {aiMatches && (
+                <div className="border border-gray-200 dark:border-gray-800">
+                  <div className="flex flex-wrap gap-3 justify-between items-center px-3 py-2 bg-gray-50 dark:bg-[#0f0f0f] border-b border-gray-200 dark:border-gray-800">
+                    <span className="text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                      {aiMatches.length} Componente(s) Detectado(s)
+                    </span>
+                    {aiMatches.some(m => m.match) && (
+                      <button
+                        onClick={handleApplyAllMatches}
+                        className="px-3 py-1 bg-[#286caf] dark:bg-[#faba33] text-white dark:text-black text-[11px] font-bold uppercase tracking-wider hover:bg-[#1f568e] dark:hover:bg-[#e0a72d]"
+                      >
+                        Agregar todos a {aiTargetBoard}
+                      </button>
+                    )}
+                  </div>
+
+                  {aiMatches.length === 0 ? (
+                    <p className="p-4 text-center font-mono text-xs text-gray-500 uppercase tracking-widest">No se detectaron componentes eléctricos en la imagen.</p>
+                  ) : (
+                    <div className="divide-y divide-gray-200 dark:divide-gray-800">
+                      {aiMatches.map((m, i) => (
+                        <div key={i} className="p-3 flex flex-col md:flex-row md:items-center gap-3">
+                          {/* Detectado */}
+                          <div className="md:w-1/3">
+                            <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest block">Detectado por IA</span>
+                            <span className="font-mono text-sm text-gray-800 dark:text-gray-200 font-bold">{m.component?.texto_detectado || '—'}</span>
+                            <span className="text-[10px] text-gray-500 block font-mono">
+                              {m.component?.categoria} · {m.component?.polos}P · {m.component?.amperaje}A
+                              {m.component?.capacidad_ka ? ` · ${m.component.capacidad_ka}kA` : ''}
+                              {m.component?.sensibilidad_ma ? ` · ${m.component.sensibilidad_ma}mA` : ''}
+                              {` · x${m.component?.cantidad || 1}`}
+                            </span>
+                          </div>
+
+                          {/* Flecha */}
+                          <div className="text-[#286caf] dark:text-[#faba33] font-mono hidden md:block">→</div>
+
+                          {/* Coincidencia */}
+                          <div className="flex-1">
+                            {m.match ? (
+                              <div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="font-mono text-sm font-bold text-[#286caf] dark:text-[#faba33]">{m.match.codigo}</span>
+                                  <span className={`text-[9px] px-1.5 py-0.5 font-bold uppercase tracking-wider ${m.exact ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'}`}>
+                                    {m.exact ? 'Exacto' : 'Equivalente'}
+                                  </span>
+                                </div>
+                                <span className="font-sans text-xs text-gray-800 dark:text-gray-200 font-medium block">{m.match.desc_corta} — {m.match.features}</span>
+                                <span className="text-[10px] text-gray-500 block font-mono">{m.match.desc_larga} · {m.match.marca}</span>
+                                {m.note && <span className="text-[10px] text-amber-600 dark:text-amber-400 block font-sans mt-0.5">{m.note}</span>}
+                              </div>
+                            ) : (
+                              <div>
+                                <span className="text-xs font-bold text-red-600 dark:text-red-400 uppercase">Sin coincidencia</span>
+                                <span className="text-[10px] text-gray-500 block font-sans">{m.note || 'No se encontró un equipo equivalente en el catálogo.'}</span>
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Acción */}
+                          <div className="md:w-auto">
+                            {m.match && (
+                              <button
+                                onClick={() => handleApplyMatch(m)}
+                                className="w-full md:w-auto px-3 py-1.5 border border-[#286caf] dark:border-[#faba33] text-[#286caf] dark:text-[#faba33] text-[11px] font-bold uppercase tracking-wider hover:bg-[#286caf]/10 dark:hover:bg-[#faba33]/15"
+                              >
+                                + Agregar a {aiTargetBoard}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
           
           {/* COLUMNA FILTROS (3/12 xl) */}
           <div className="xl:col-span-3 space-y-4">
@@ -630,7 +927,7 @@ export default function TableroCalculator() {
                             </td>
                             <td className="px-4 py-2 text-right border-r border-gray-100 dark:border-gray-800/30 font-semibold">
                               S/.{item.precio_lista.toFixed(2)}
-                              <span className="text-[9px] text-green-600 dark:text-green-500 block">Unit: S/.{item.precio_unit.toFixed(2)} (-{item.descuento * 100}%)</span>
+                              <span className="text-[9px] text-green-600 dark:text-green-500 block">Unit: S/.{effectiveUnitPrice(item).toFixed(2)} (-{Number(descuento)}%)</span>
                             </td>
                             
                             {activeBoards.map(board => {
@@ -672,6 +969,7 @@ export default function TableroCalculator() {
               )}
             </div>
           </div>
+        </div>
         </div>
       )}
 

@@ -13,4 +13,5 @@ Route::post('/calculate', [CalculatorController::class, 'calculate']);
 
 Route::get('/tableros/catalog', [TableroController::class, 'catalog']);
 Route::post('/tableros/calculate', [TableroController::class, 'calculate']);
+Route::post('/tableros/analyze-image', [TableroController::class, 'analyzeImage']);
 

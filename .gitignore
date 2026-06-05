@@ -2,3 +2,4 @@ ETM-Presupuestos.xlsx
 extract_catalog.py
 INSTRUCCIONES_DESPLIEGUE.md
 .env.production
+frontend/.agents
