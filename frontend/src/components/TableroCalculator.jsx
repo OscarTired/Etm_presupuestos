@@ -30,6 +30,10 @@ export default function TableroCalculator() {
   const [aiError, setAiError] = useState(null)
   const [aiMatches, setAiMatches] = useState(null)
   const [aiTargetBoard, setAiTargetBoard] = useState('T01')
+  const [aiDragActive, setAiDragActive] = useState(false)
+
+  // Notificaciones (toasts)
+  const [toasts, setToasts] = useState([])
   
   // Búsqueda y filtros
   const [searchQuery, setSearchQuery] = useState('')
@@ -218,15 +222,49 @@ export default function TableroCalculator() {
   // Precio unitario efectivo con el descuento global aplicado
   const effectiveUnitPrice = (item) => item.precio_lista * (1 - Number(descuento) / 100)
 
+  // ===== Notificaciones (toasts) =====
+  const pushToast = (message, type = 'success') => {
+    const id = Date.now() + Math.random()
+    setToasts(prev => [...prev, { id, message, type }])
+    setTimeout(() => {
+      setToasts(prev => prev.filter(t => t.id !== id))
+    }, 3500)
+  }
+  const dismissToast = (id) => setToasts(prev => prev.filter(t => t.id !== id))
+
   // ===== Análisis de imagen con IA =====
   const handleAiFileChange = (file) => {
     if (!file) return
+    if (!file.type.startsWith('image/')) {
+      setAiError('El archivo debe ser una imagen (JPG, PNG o WEBP).')
+      pushToast('Formato no válido: sube una imagen.', 'error')
+      return
+    }
     setAiError(null)
     setAiMatches(null)
     setAiFile(file)
     const reader = new FileReader()
     reader.onload = (e) => setAiPreview(e.target.result)
     reader.readAsDataURL(file)
+  }
+
+  // Drag & drop sobre la zona de carga
+  const handleAiDragOver = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!aiDragActive) setAiDragActive(true)
+  }
+  const handleAiDragLeave = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAiDragActive(false)
+  }
+  const handleAiDrop = (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setAiDragActive(false)
+    const file = e.dataTransfer?.files?.[0]
+    if (file) handleAiFileChange(file)
   }
 
   const handleAnalyzeImage = async () => {
@@ -255,12 +293,27 @@ export default function TableroCalculator() {
       if (!response.ok) {
         throw new Error(data.error || data.detail || 'No se pudo analizar la imagen.')
       }
-      setAiMatches(data.matches || [])
+      const matches = data.matches || []
+      setAiMatches(matches)
+      const withMatch = matches.filter(m => m.match).length
+      if (matches.length === 0) {
+        pushToast('No se detectaron componentes eléctricos en la imagen.', 'info')
+      } else {
+        pushToast(`${matches.length} componente(s) detectado(s), ${withMatch} con equivalencia en catálogo.`, 'success')
+      }
     } catch (err) {
       setAiError(err.message)
+      pushToast(err.message, 'error')
     } finally {
       setAiLoading(false)
     }
+  }
+
+  // Cantidad actual de un match en el tablero destino del análisis
+  const matchQtyInTarget = (matchEntry) => {
+    if (!matchEntry?.match) return 0
+    const itemId = matchEntry.match.id
+    return (quantities[itemId] && quantities[itemId][aiTargetBoard]) || 0
   }
 
   // Agregar la coincidencia de un componente detectado al tablero seleccionado
@@ -270,11 +323,21 @@ export default function TableroCalculator() {
     const qty = matchEntry.component?.cantidad || 1
     const current = (quantities[itemId] && quantities[itemId][aiTargetBoard]) || 0
     handleQtyChange(itemId, aiTargetBoard, current + qty)
+    pushToast(`+${qty} · ${matchEntry.match.desc_corta} → ${aiTargetBoard}`, 'success')
+  }
+
+  // Quitar del tablero la cantidad detectada de un match
+  const handleRemoveMatch = (matchEntry) => {
+    if (!matchEntry || !matchEntry.match) return
+    const itemId = matchEntry.match.id
+    handleQtyChange(itemId, aiTargetBoard, 0)
+    pushToast(`Quitado · ${matchEntry.match.desc_corta} de ${aiTargetBoard}`, 'info')
   }
 
   // Agregar todas las coincidencias válidas de una vez
   const handleApplyAllMatches = () => {
     if (!aiMatches) return
+    let added = 0
     setQuantities(prev => {
       const updated = { ...prev }
       aiMatches.forEach(m => {
@@ -284,9 +347,32 @@ export default function TableroCalculator() {
         const itemMap = updated[itemId] ? { ...updated[itemId] } : {}
         itemMap[aiTargetBoard] = (itemMap[aiTargetBoard] || 0) + qty
         updated[itemId] = itemMap
+        added++
       })
       return updated
     })
+    if (added > 0) pushToast(`${added} componente(s) agregado(s) a ${aiTargetBoard}.`, 'success')
+  }
+
+  // Quitar del tablero todas las coincidencias detectadas
+  const handleRemoveAllMatches = () => {
+    if (!aiMatches) return
+    let removed = 0
+    setQuantities(prev => {
+      const updated = { ...prev }
+      aiMatches.forEach(m => {
+        if (!m.match) return
+        const itemId = m.match.id
+        if (updated[itemId] && updated[itemId][aiTargetBoard]) {
+          const itemMap = { ...updated[itemId] }
+          itemMap[aiTargetBoard] = 0
+          updated[itemId] = itemMap
+          removed++
+        }
+      })
+      return updated
+    })
+    if (removed > 0) pushToast(`Componentes retirados de ${aiTargetBoard}.`, 'info')
   }
 
   const resetAi = () => {
@@ -294,6 +380,7 @@ export default function TableroCalculator() {
     setAiPreview(null)
     setAiMatches(null)
     setAiError(null)
+    setAiDragActive(false)
   }
 
   // Extraer valores únicos para los filtros de catálogo cargado
@@ -597,7 +684,17 @@ export default function TableroCalculator() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Zona de carga */}
                 <div className="space-y-3">
-                  <label className="block border-2 border-dashed border-gray-300 dark:border-gray-700 hover:border-[#286caf] dark:hover:border-[#faba33] transition-colors cursor-pointer p-4 text-center bg-gray-50/50 dark:bg-[#0a0a0a]">
+                  <label
+                    onDragOver={handleAiDragOver}
+                    onDragEnter={handleAiDragOver}
+                    onDragLeave={handleAiDragLeave}
+                    onDrop={handleAiDrop}
+                    className={`block border-2 border-dashed transition-colors duration-150 cursor-pointer p-4 text-center ${
+                      aiDragActive
+                        ? 'border-[#286caf] dark:border-[#faba33] bg-[#286caf]/10 dark:bg-[#faba33]/15'
+                        : 'border-gray-300 dark:border-gray-700 hover:border-[#286caf] dark:hover:border-[#faba33] bg-gray-50/50 dark:bg-[#0a0a0a]'
+                    }`}
+                  >
                     <input
                       type="file"
                       accept="image/*"
@@ -605,11 +702,16 @@ export default function TableroCalculator() {
                       onChange={(e) => handleAiFileChange(e.target.files?.[0])}
                     />
                     {aiPreview ? (
-                      <img src={aiPreview} alt="Vista previa" className="max-h-48 mx-auto object-contain border border-gray-200 dark:border-gray-800" />
+                      <div className="space-y-2 pointer-events-none">
+                        <img src={aiPreview} alt="Vista previa" className="max-h-48 mx-auto object-contain border border-gray-200 dark:border-gray-800" />
+                        <p className="text-[10px] text-gray-400 font-mono truncate">{aiFile?.name}</p>
+                      </div>
                     ) : (
-                      <div className="py-6">
-                        <svg className="w-8 h-8 mx-auto text-gray-400 mb-2" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
-                        <p className="text-xs font-sans text-gray-600 dark:text-gray-400 font-semibold">Haz clic para subir una imagen</p>
+                      <div className="py-6 pointer-events-none">
+                        <svg className={`w-8 h-8 mx-auto mb-2 transition-colors ${aiDragActive ? 'text-[#286caf] dark:text-[#faba33]' : 'text-gray-400'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5m-13.5-9L12 3m0 0l4.5 4.5M12 3v13.5" /></svg>
+                        <p className="text-sm font-sans text-gray-700 dark:text-gray-300 font-semibold">
+                          {aiDragActive ? 'Suelta la imagen aquí' : 'Arrastra una imagen o haz clic para subir'}
+                        </p>
                         <p className="text-[10px] text-gray-400 font-mono mt-1">JPG, PNG, WEBP — máx. 10MB</p>
                       </div>
                     )}
@@ -665,19 +767,41 @@ export default function TableroCalculator() {
               </div>
 
               {/* Resultados de coincidencias */}
-              {aiMatches && (
+              {aiMatches && (() => {
+                const matchable = aiMatches.filter(m => m.match)
+                const addedCount = matchable.filter(m => matchQtyInTarget(m) > 0).length
+                const allAdded = matchable.length > 0 && addedCount === matchable.length
+                return (
                 <div className="border border-gray-200 dark:border-gray-800">
-                  <div className="flex flex-wrap gap-3 justify-between items-center px-3 py-2 bg-gray-50 dark:bg-[#0f0f0f] border-b border-gray-200 dark:border-gray-800">
-                    <span className="text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300">
-                      {aiMatches.length} Componente(s) Detectado(s)
-                    </span>
-                    {aiMatches.some(m => m.match) && (
-                      <button
-                        onClick={handleApplyAllMatches}
-                        className="px-3 py-1 bg-[#286caf] dark:bg-[#faba33] text-white dark:text-black text-[11px] font-bold uppercase tracking-wider hover:bg-[#1f568e] dark:hover:bg-[#e0a72d]"
-                      >
-                        Agregar todos a {aiTargetBoard}
-                      </button>
+                  <div className="flex flex-wrap gap-3 justify-between items-center px-3 py-2.5 bg-gray-50 dark:bg-[#0f0f0f] border-b border-gray-200 dark:border-gray-800">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs font-bold uppercase tracking-wider text-gray-700 dark:text-gray-300">
+                        {aiMatches.length} Detectado(s)
+                      </span>
+                      {matchable.length > 0 && (
+                        <span className={`text-[10px] font-mono px-2 py-0.5 font-bold ${addedCount > 0 ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400' : 'bg-gray-200 dark:bg-gray-800 text-gray-500 dark:text-gray-400'}`}>
+                          {addedCount}/{matchable.length} en {aiTargetBoard}
+                        </span>
+                      )}
+                    </div>
+                    {matchable.length > 0 && (
+                      <div className="flex items-center gap-2">
+                        {addedCount > 0 && (
+                          <button
+                            onClick={handleRemoveAllMatches}
+                            className="px-3 py-1.5 border border-gray-300 dark:border-gray-700 text-gray-600 dark:text-gray-400 text-[11px] font-bold uppercase tracking-wider hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+                          >
+                            Quitar todos
+                          </button>
+                        )}
+                        <button
+                          onClick={handleApplyAllMatches}
+                          disabled={allAdded}
+                          className="px-3 py-1.5 bg-[#286caf] dark:bg-[#faba33] text-white dark:text-black text-[11px] font-bold uppercase tracking-wider hover:bg-[#1f568e] dark:hover:bg-[#e0a72d] disabled:opacity-40 transition-colors"
+                        >
+                          {allAdded ? 'Todos agregados' : `Agregar todos a ${aiTargetBoard}`}
+                        </button>
+                      </div>
                     )}
                   </div>
 
@@ -685,10 +809,13 @@ export default function TableroCalculator() {
                     <p className="p-4 text-center font-mono text-xs text-gray-500 uppercase tracking-widest">No se detectaron componentes eléctricos en la imagen.</p>
                   ) : (
                     <div className="divide-y divide-gray-200 dark:divide-gray-800">
-                      {aiMatches.map((m, i) => (
-                        <div key={i} className="p-3 flex flex-col md:flex-row md:items-center gap-3">
+                      {aiMatches.map((m, i) => {
+                        const inTarget = matchQtyInTarget(m)
+                        const isAdded = inTarget > 0
+                        return (
+                        <div key={i} className={`p-3 flex flex-col md:flex-row md:items-center gap-3 transition-colors ${isAdded ? 'bg-green-50/60 dark:bg-green-900/10' : ''}`}>
                           {/* Detectado */}
-                          <div className="md:w-1/3">
+                          <div className="md:w-1/4">
                             <span className="text-[9px] font-bold text-gray-400 uppercase tracking-widest block">Detectado por IA</span>
                             <span className="font-mono text-sm text-gray-800 dark:text-gray-200 font-bold">{m.component?.texto_detectado || '—'}</span>
                             <span className="text-[10px] text-gray-500 block font-mono">
@@ -724,23 +851,59 @@ export default function TableroCalculator() {
                             )}
                           </div>
 
-                          {/* Acción */}
-                          <div className="md:w-auto">
-                            {m.match && (
-                              <button
-                                onClick={() => handleApplyMatch(m)}
-                                className="w-full md:w-auto px-3 py-1.5 border border-[#286caf] dark:border-[#faba33] text-[#286caf] dark:text-[#faba33] text-[11px] font-bold uppercase tracking-wider hover:bg-[#286caf]/10 dark:hover:bg-[#faba33]/15"
-                              >
-                                + Agregar a {aiTargetBoard}
-                              </button>
+                          {/* Acción / Control de cantidad */}
+                          <div className="md:w-auto md:min-w-[190px] flex flex-col items-stretch md:items-end gap-1.5">
+                            {m.match ? (
+                              isAdded ? (
+                                <>
+                                  <div className="flex items-center justify-between md:justify-end gap-2">
+                                    <span className="text-[10px] font-bold text-green-700 dark:text-green-400 uppercase tracking-wider flex items-center gap-1">
+                                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                                      En {aiTargetBoard}
+                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                      <button
+                                        onClick={() => handleQtyChange(m.match.id, aiTargetBoard, inTarget - 1)}
+                                        className="w-6 h-6 bg-gray-200 dark:bg-gray-800 hover:bg-gray-300 dark:hover:bg-gray-700 text-gray-800 dark:text-gray-200 flex items-center justify-center font-bold"
+                                      >
+                                        -
+                                      </button>
+                                      <span className="w-9 text-center font-mono font-bold text-sm text-gray-900 dark:text-gray-100">{inTarget}</span>
+                                      <button
+                                        onClick={() => handleQtyChange(m.match.id, aiTargetBoard, inTarget + 1)}
+                                        className="w-6 h-6 bg-[#286caf] dark:bg-[#faba33] hover:bg-[#1f568e] dark:hover:bg-[#e0a72d] text-white dark:text-black flex items-center justify-center font-bold"
+                                      >
+                                        +
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <button
+                                    onClick={() => handleRemoveMatch(m)}
+                                    className="text-[10px] font-mono text-gray-500 hover:text-red-600 dark:hover:text-red-400 uppercase tracking-wider self-end"
+                                  >
+                                    Quitar del tablero
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={() => handleApplyMatch(m)}
+                                  className="w-full md:w-auto px-3 py-1.5 bg-[#286caf] dark:bg-[#faba33] text-white dark:text-black text-[11px] font-bold uppercase tracking-wider hover:bg-[#1f568e] dark:hover:bg-[#e0a72d] transition-colors flex items-center justify-center gap-1"
+                                >
+                                  + Agregar {m.component?.cantidad > 1 ? `×${m.component.cantidad}` : ''} a {aiTargetBoard}
+                                </button>
+                              )
+                            ) : (
+                              <span className="text-[10px] font-mono text-gray-400 uppercase tracking-wider text-right">No agregable</span>
                             )}
                           </div>
                         </div>
-                      ))}
+                        )
+                      })}
                     </div>
                   )}
                 </div>
-              )}
+                )
+              })()}
             </div>
           )}
         </div>
@@ -1146,6 +1309,47 @@ export default function TableroCalculator() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ===== NOTIFICACIONES (TOASTS) ===== */}
+      {toasts.length > 0 && (
+        <div className="fixed top-16 left-3 right-3 sm:left-auto sm:right-4 sm:w-96 z-50 flex flex-col gap-2 pointer-events-none">
+          {toasts.map(t => (
+            <div
+              key={t.id}
+              role="status"
+              className={`pointer-events-auto flex items-start gap-2.5 px-3.5 py-2.5 border shadow-[3px_3px_0px_0px_rgba(0,0,0,0.12)] dark:shadow-[3px_3px_0px_0px_rgba(0,0,0,0.5)] toast-enter w-full ${
+                t.type === 'success'
+                  ? 'bg-white dark:bg-[#0f1a12] border-green-300 dark:border-green-800'
+                  : t.type === 'error'
+                  ? 'bg-white dark:bg-[#1a0f0f] border-red-300 dark:border-red-800'
+                  : 'bg-white dark:bg-[#0f1419] border-gray-300 dark:border-gray-700'
+              }`}
+            >
+              <span className={`mt-0.5 shrink-0 ${
+                t.type === 'success' ? 'text-green-600 dark:text-green-400'
+                : t.type === 'error' ? 'text-red-600 dark:text-red-400'
+                : 'text-[#286caf] dark:text-[#faba33]'
+              }`}>
+                {t.type === 'success' ? (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>
+                ) : t.type === 'error' ? (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                ) : (
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                )}
+              </span>
+              <p className="flex-1 text-xs font-sans text-gray-800 dark:text-gray-100 leading-snug font-medium break-words">{t.message}</p>
+              <button
+                onClick={() => dismissToast(t.id)}
+                className="shrink-0 text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors mt-0.5"
+                aria-label="Cerrar notificación"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </div>
