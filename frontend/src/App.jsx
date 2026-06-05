@@ -78,7 +78,7 @@ function App() {
             </button>
 
             <div className="font-mono text-[10px] md:text-xs text-gray-500 dark:text-gray-400 hidden md:block">
-              v1.2.0 // ENGINE: OCTA_DEV
+              v1.2.5 // ENGINE: OCTA_DEV
             </div>
           </div>
         </div>
